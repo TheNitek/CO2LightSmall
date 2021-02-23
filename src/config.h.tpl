@@ -2,3 +2,7 @@
 #define API_KEY ""
 #define BOT_TOKEN ""
 #define ADMIN_CHAT_ID ""
+#define WIFI1_SSID ""
+#define WIFI1_PASS ""
+#define WIFI2_SSID ""
+#define WIFI2_PASS ""

@@ -1,8 +1,6 @@
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
-#include <ESP8266Ping.h>
-#include <WiFiUdp.h>
-#include <WiFiManager.h>
+#include <ESP8266WiFiMulti.h>
 #include <ESP8266HTTPClient.h>
 #include <UniversalTelegramBot.h>
 #include <SoftwareSerial.h>
@@ -25,10 +23,11 @@
 #define CO2_UPDATE_INTERVAL 30*1000
 #define LED_UPDATE_INTERVAL 50
 #define ALLTHINGS_UPDATE_INTERVAL 1*60*1000
-#define WIFI_CHECK_INTERVAL 1*30*1000
+#define WIFI_CHECK_INTERVAL 5*1000
 #define TELEGRAM_HANDLE_INTERVAL 5*1000
 
-WiFiManager wifiManager;
+ESP8266WiFiMulti wifiMulti;
+const uint32_t wifiConnectTimeout = 10*1000;
 
 SoftwareSerial serialCO2(CO2_RX, CO2_TX);
 AirGradient ag = AirGradient();
@@ -42,10 +41,13 @@ uint8_t circleLedCurrent = 0;
 uint8_t breatheBrightness = 0;
 enum color {RED_BLINK, RED, YELLOW, GREEN, DARK};
 color currentColor = DARK;
+uint32_t currentColorValue = Adafruit_NeoPixel::Color(0, 0, 150);
 
 const char* NTP_SERVER = "de.pool.ntp.org";
 const char* TIME_ZONE = "CET-1CEST,M3.5.0,M10.5.0/3";
-//bool offline = false;
+
+bool isFirstConnect = true;
+uint8_t httpErrorCount = 0;
 
 const char* apiUrl=API_URL;
 const char* apiKey=API_KEY;
@@ -56,11 +58,13 @@ UniversalTelegramBot bot(BOT_TOKEN, client);
 
 Scheduler runner;
 void co2UpdateCallback();
-void ledBreatheCallback() { breatheLed(); };
+void ledCircleCallback(){ circleLed(); };
+void ledBreatheCallback();
 void wifiCheckCallback();
 void allThingsCallback() { allThingsSend(); };
 void telegramCallback();
 Task co2Task(CO2_UPDATE_INTERVAL, TASK_FOREVER, &co2UpdateCallback, &runner, true);
+Task circleTask(LED_UPDATE_INTERVAL, TASK_FOREVER, &ledCircleCallback, &runner, true);
 Task breatheTask(LED_UPDATE_INTERVAL, TASK_FOREVER, &ledBreatheCallback, &runner, false);
 Task wifiTask(WIFI_CHECK_INTERVAL, TASK_FOREVER, &wifiCheckCallback, &runner, true);
 Task allThingsTask(ALLTHINGS_UPDATE_INTERVAL, TASK_FOREVER, &allThingsCallback, &runner, true);
@@ -85,10 +89,20 @@ void co2UpdateCallback() {
 
   setLedColor();
 }
+void ledBreatheCallback() {
+  if(!circleTask.isEnabled()) {
+    breatheLed();
+  }
+};
+
 
 void circleLed() {
   pixels.clear();
-  pixels.setPixelColor(circleLedCurrent, pixels.Color(0, 0, 150));
+  pixels.setPixelColor(circleLedCurrent, currentColorValue);
+  if(breatheTask.isEnabled()) {
+    pixels.setBrightness(Adafruit_NeoPixel::sine8(breatheBrightness));
+    breatheBrightness += 2;
+  }
   pixels.show();
 
   circleLedCurrent = (circleLedCurrent+1) % LED_NUMPIXELS;
@@ -101,8 +115,8 @@ void setRingColor(uint32_t color) {
 }
 
 void breatheLed() {
-  pixels.fill(pixels.Color(150, 0, 0));
-  pixels.setBrightness(pixels.sine8(breatheBrightness));
+  pixels.fill(currentColorValue);
+  pixels.setBrightness(Adafruit_NeoPixel::sine8(breatheBrightness));
   pixels.show();
 
   breatheBrightness += 2;
@@ -132,7 +146,8 @@ boolean isQuietTime() {
 
 void setLedColor() {
   if(measurement.co2 < 0) {
-      setRingColor(pixels.Color(255, 255, 255));
+      currentColorValue = Adafruit_NeoPixel::Color(255, 255, 255);
+      setRingColor(currentColorValue);
       return;
   }
 
@@ -147,44 +162,34 @@ void setLedColor() {
     if(measurement.co2 < 600) {
       if(currentColor != GREEN) {
         breatheTask.disable();
-        setRingColor(pixels.Color(0, 150, 0));
+        currentColorValue = Adafruit_NeoPixel::Color(0, 150, 0);
+        setRingColor(currentColorValue);
         currentColor = GREEN;
         Serial.println("green");
       }
     } else if(measurement.co2 < 1000) {
       if(currentColor != YELLOW) {
         breatheTask.disable();
-        setRingColor(pixels.Color(150, 150, 0));
+        currentColorValue = Adafruit_NeoPixel::Color(150, 150, 0);
+        setRingColor(currentColorValue);
         currentColor = YELLOW;
         Serial.println("yellow");
       }
     } else if(measurement.co2 < 1500) {
       if(currentColor != RED) {
         breatheTask.disable();
-        setRingColor(pixels.Color(150, 0, 0));
+        currentColorValue = Adafruit_NeoPixel::Color(150, 0, 0);
+        setRingColor(currentColorValue);
         currentColor = RED;
         Serial.println("red");
       }
     } else {
       if(currentColor != RED_BLINK) {
-        breatheTask.enable();
+        currentColorValue = Adafruit_NeoPixel::Color(150, 0, 0);
         currentColor = RED_BLINK;
+        breatheTask.enable();
         Serial.println("red blink");
       }
-    }
-  }
-}
-
-void wifiCheckCallback() {
-  if (!WiFi.isConnected() || !Ping.ping(WiFi.gatewayIP(), 2)) {
-
-    Serial.println("Reconnecting to WiFi...");
-    wifiManager.disconnect();
-    connectWifi();
-
-    if(!WiFi.isConnected() || !Ping.ping(WiFi.gatewayIP(), 2)) {
-      Serial.println("Still not connected.");
-      ESP.restart();
     }
   }
 }
@@ -192,18 +197,37 @@ void wifiCheckCallback() {
 void connectWifi() {
   Serial.println("Connecting Wifi");
 
-  wifiManager.setDebugOutput(false);
-  wifiManager.setConnectRetries(5);
-  wifiManager.setShowInfoUpdate(false);
-  wifiManager.setCleanConnect(true);
-  wifiManager.setTimeout(30);
-  wifiManager.autoConnect("co2light", "co2co2co2");
+  if(wifiMulti.run(wifiConnectTimeout) != WL_CONNECTED) {
+    circleTask.enableIfNot();
+    return;
+  }
 
-  Serial.print("WiFi connected with IP: "); Serial.println(WiFi.localIP());
+  Serial.print("WiFi connected: ");
+  Serial.print(WiFi.SSID());
+  Serial.print(" ");
+  Serial.println(WiFi.localIP());
+  httpErrorCount = 0;
+  circleTask.disable();
+
+  if(isFirstConnect) {
+    bot.sendMessage(ADMIN_CHAT_ID, "Reboot: " + ESP.getResetReason(), "");
+    isFirstConnect=false;
+  }
+}
+
+void wifiCheckCallback() {
+  if(WiFi.isConnected() && (httpErrorCount > 2)) {
+    Serial.println("Reconnecting to WiFi...");
+    WiFi.disconnect();
+  }
+
+  if(!WiFi.isConnected()) {
+    connectWifi();
+  }
 }
 
 boolean allThingsSend() {
-  if(measurement.co2 < 0 || measurement.co2 >= 5000 || !WiFi.isConnected()) {
+  if(measurement.co2 <= 0 || measurement.co2 >= 5000 || !WiFi.isConnected()) {
     return false;
   }
 
@@ -231,6 +255,9 @@ boolean allThingsSend() {
   Serial.print("Error on sending PUT: ");
   Serial.println(httpResponseCode);
   Serial.println(ESP.getFreeHeap());
+  if(httpResponseCode < 0) {
+    httpErrorCount++;
+  }
   return false;
 }
 
@@ -271,29 +298,28 @@ void setup() {
 
   Serial.println(ESP.getResetReason());
 
-  /*rst_info *rstInfo = ESP.getResetInfoPtr();
-  if(rstInfo->reason == REASON_EXCEPTION_RST) {
-    Serial.println("Attempting clean restart");
-    ESP.reset();
-  }*/
-
   pixels.begin();
-
-  circleLed();
-  connectWifi();
-  configTzTime(TIME_ZONE, NTP_SERVER);
 
   circleLed();
   serialCO2.begin(9600);
   ag.CO2_Init(&serialCO2);
 
   circleLed();
+  WiFi.persistent(false);
+  WiFi.mode(WIFI_STA);
+  wifiMulti.addAP(WIFI1_SSID, WIFI1_PASS);
+  wifiMulti.addAP(WIFI2_SSID, WIFI2_PASS);
+  connectWifi();
+  configTzTime(TIME_ZONE, NTP_SERVER);
+
+  circleLed();
   client.setTrustAnchors(&cert);
-  if(WiFi.isConnected()) {
-    bot.sendMessage(ADMIN_CHAT_ID, "Reboot: " + ESP.getResetReason(), "");
-  }
 
   co2Task.setSchedulingOption(TASK_SCHEDULE_NC);
+  circleTask.setSchedulingOption(TASK_SCHEDULE_NC);
+  circleTask.setOnDisable([]() {
+    setRingColor(currentColorValue);
+  });
   breatheTask.setSchedulingOption(TASK_SCHEDULE_NC);
   wifiTask.setSchedulingOption(TASK_SCHEDULE_NC);
   allThingsTask.setSchedulingOption(TASK_SCHEDULE_NC);
