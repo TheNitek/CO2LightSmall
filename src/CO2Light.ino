@@ -182,7 +182,7 @@ void wifiCheckCallback() {
     wifiManager.disconnect();
     connectWifi();
 
-    if(!WiFi.isConnected()) {
+    if(!WiFi.isConnected() || !Ping.ping(WiFi.gatewayIP(), 2)) {
       Serial.println("Still not connected.");
       ESP.restart();
     }
