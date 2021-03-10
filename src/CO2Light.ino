@@ -4,7 +4,7 @@
 #include <ESP8266HTTPClient.h>
 #include <UniversalTelegramBot.h>
 #include <SoftwareSerial.h>
-#include <AirGradient.h>
+#include "SensorS8.h"
 #include <Adafruit_NeoPixel.h>
 #define _TASK_SLEEP_ON_IDLE_RUN
 #define _TASK_SCHEDULING_OPTIONS
@@ -33,7 +33,7 @@ SoftwareSerial debugSerial(-1, TX);
 #define DEBUG debugSerial
 
 //SoftwareSerial serialCO2(CO2_RX, CO2_TX);
-AirGradient ag = AirGradient();
+SensorS8 co2Sensor = SensorS8();
 struct {
   int co2 = -1;
   uint8_t errorCount = 0;
@@ -75,7 +75,7 @@ Task telegramTask(TELEGRAM_HANDLE_INTERVAL, TASK_FOREVER, &telegramCallback, &ru
 
 
 void co2UpdateCallback() {
-  int co2 = ag.getCO2_Raw();
+  int co2 = co2Sensor.getCO2();
 
   DEBUG.print(" ");
   DEBUG.println(co2);
@@ -190,7 +190,7 @@ void setLedColor() {
       if(currentColor != RED_BLINK) {
         currentColorValue = Adafruit_NeoPixel::Color(150, 0, 0);
         currentColor = RED_BLINK;
-        breatheTask.enable();
+        breatheTask.enableIfNot();
         DEBUG.println("red blink");
       }
     }
@@ -275,7 +275,7 @@ void telegramCallback() {
     DEBUG.println("got message");
     for (int i = 0; i < numNewMessages; i++) {
       DEBUG.print("ChatId: "); DEBUG.println(bot.messages[i].chat_id);
-      if (bot.messages[i].text == "/status") {
+      if (bot.messages[i].text.startsWith("/status")) {
         sendStatusTelegram(bot.messages[i].chat_id);
       }
     }
@@ -299,7 +299,7 @@ void setup() {
   Serial.begin(9600);
   Serial.swap();
 
-  DEBUG.begin(115200);
+  DEBUG.begin(9600);
   DEBUG.println();
 
   DEBUG.println(ESP.getResetReason());
@@ -307,7 +307,14 @@ void setup() {
   pixels.begin();
 
   circleLed();
-  ag.CO2_Init(&Serial);
+  co2Sensor.debug = true;
+  co2Sensor.begin(&Serial, &DEBUG);
+  int abc = co2Sensor.getABCPeriod();
+  if(abc >= 0) {
+    DEBUG.printf("ABC period: %.2f\n", abc/24.0f);
+  } else {
+    DEBUG.println("Could not read ABC period");
+  }
 
   circleLed();
   WiFi.persistent(false);
