@@ -29,7 +29,10 @@
 ESP8266WiFiMulti wifiMulti;
 const uint32_t wifiConnectTimeout = 10*1000;
 
-SoftwareSerial serialCO2(CO2_RX, CO2_TX);
+SoftwareSerial debugSerial(-1, TX);
+#define DEBUG debugSerial
+
+//SoftwareSerial serialCO2(CO2_RX, CO2_TX);
 AirGradient ag = AirGradient();
 struct {
   int co2 = -1;
@@ -74,8 +77,8 @@ Task telegramTask(TELEGRAM_HANDLE_INTERVAL, TASK_FOREVER, &telegramCallback, &ru
 void co2UpdateCallback() {
   int co2 = ag.getCO2_Raw();
 
-  Serial.print(" ");
-  Serial.println(co2);
+  DEBUG.print(" ");
+  DEBUG.println(co2);
 
   if(co2 < 0) {
     measurement.errorCount++;
@@ -126,7 +129,7 @@ boolean isQuietTime() {
   /*time_t now = time(nullptr);
   tm timeinfo;
   if(!getLocalTime(&timeinfo)){
-    Serial.println("Failed to obtain time");
+    DEBUG.println("Failed to obtain time");
     return false;
   }
   if(timeinfo.tm_hour >= 20) {
@@ -156,7 +159,7 @@ void setLedColor() {
       breatheTask.disable();
       pixels.clear();
       currentColor = DARK;
-      Serial.println("dark");
+      DEBUG.println("dark");
     }
   } else {
     if(measurement.co2 < 600) {
@@ -165,7 +168,7 @@ void setLedColor() {
         currentColorValue = Adafruit_NeoPixel::Color(0, 150, 0);
         setRingColor(currentColorValue);
         currentColor = GREEN;
-        Serial.println("green");
+        DEBUG.println("green");
       }
     } else if(measurement.co2 < 1000) {
       if(currentColor != YELLOW) {
@@ -173,7 +176,7 @@ void setLedColor() {
         currentColorValue = Adafruit_NeoPixel::Color(150, 150, 0);
         setRingColor(currentColorValue);
         currentColor = YELLOW;
-        Serial.println("yellow");
+        DEBUG.println("yellow");
       }
     } else if(measurement.co2 < 1500) {
       if(currentColor != RED) {
@@ -181,31 +184,31 @@ void setLedColor() {
         currentColorValue = Adafruit_NeoPixel::Color(150, 0, 0);
         setRingColor(currentColorValue);
         currentColor = RED;
-        Serial.println("red");
+        DEBUG.println("red");
       }
     } else {
       if(currentColor != RED_BLINK) {
         currentColorValue = Adafruit_NeoPixel::Color(150, 0, 0);
         currentColor = RED_BLINK;
         breatheTask.enable();
-        Serial.println("red blink");
+        DEBUG.println("red blink");
       }
     }
   }
 }
 
 void connectWifi() {
-  Serial.println("Connecting Wifi");
+  DEBUG.println("Connecting Wifi");
 
   if(wifiMulti.run(wifiConnectTimeout) != WL_CONNECTED) {
     circleTask.enableIfNot();
     return;
   }
 
-  Serial.print("WiFi connected: ");
-  Serial.print(WiFi.SSID());
-  Serial.print(" ");
-  Serial.println(WiFi.localIP());
+  DEBUG.print("WiFi connected: ");
+  DEBUG.print(WiFi.SSID());
+  DEBUG.print(" ");
+  DEBUG.println(WiFi.localIP());
   httpErrorCount = 0;
   circleTask.disable();
 
@@ -217,7 +220,7 @@ void connectWifi() {
 
 void wifiCheckCallback() {
   if(WiFi.isConnected() && (httpErrorCount > 2)) {
-    Serial.println("Reconnecting to WiFi...");
+    DEBUG.println("Reconnecting to WiFi...");
     WiFi.disconnect();
   }
 
@@ -235,7 +238,7 @@ boolean allThingsSend() {
   client.setInsecure();
   HTTPClient http;
   if(!http.begin(client, apiUrl)) {
-    Serial.println("Could not begin HTTPClient");
+    DEBUG.println("Could not begin HTTPClient");
     return false;
   }
   http.addHeader("Authorization", apiKey);
@@ -248,13 +251,13 @@ boolean allThingsSend() {
   int httpResponseCode = http.PUT(payload);
 
   if(httpResponseCode==HTTP_CODE_NO_CONTENT) {
-    Serial.println("Sent data");
+    DEBUG.println("Sent data");
     return true;
   }
 
-  Serial.print("Error on sending PUT: ");
-  Serial.println(httpResponseCode);
-  Serial.println(ESP.getFreeHeap());
+  DEBUG.print("Error on sending PUT: ");
+  DEBUG.println(httpResponseCode);
+  DEBUG.println(ESP.getFreeHeap());
   if(httpResponseCode < 0) {
     httpErrorCount++;
   }
@@ -269,9 +272,9 @@ void telegramCallback() {
   int numNewMessages = bot.getUpdates(bot.last_message_received + 1);
 
   while (numNewMessages) {
-    Serial.println("got message");
+    DEBUG.println("got message");
     for (int i = 0; i < numNewMessages; i++) {
-      Serial.print("ChatId: "); Serial.println(bot.messages[i].chat_id);
+      DEBUG.print("ChatId: "); DEBUG.println(bot.messages[i].chat_id);
       if (bot.messages[i].text == "/status") {
         sendStatusTelegram(bot.messages[i].chat_id);
       }
@@ -287,22 +290,24 @@ boolean sendStatusTelegram(String recipient) {
     if(bot.sendMessage(recipient, String(msgBuffer), "")) {
       return true;
     } else {
-      Serial.println("Failed to send status");
+      DEBUG.println("Failed to send status");
       return false;
     }
 };
 
 void setup() {
-  Serial.begin(115200);
-  Serial.println();
+  Serial.begin(9600);
+  Serial.swap();
 
-  Serial.println(ESP.getResetReason());
+  DEBUG.begin(115200);
+  DEBUG.println();
+
+  DEBUG.println(ESP.getResetReason());
 
   pixels.begin();
 
   circleLed();
-  serialCO2.begin(9600);
-  ag.CO2_Init(&serialCO2);
+  ag.CO2_Init(&Serial);
 
   circleLed();
   WiFi.persistent(false);
